@@ -1,0 +1,14 @@
+[project]
+name = "gdacs-gfm"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "geopandas>=1.0.1",
+    "geopathfinder>=0.2.0",
+    "geospade>=0.2.4",
+    "numba>=0.60.0",
+    "numpy>=2.0.2",
+    "yeoda>=1.0.0",
+]
