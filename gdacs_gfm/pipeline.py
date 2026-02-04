@@ -3,7 +3,11 @@ from pathlib import Path
 from tqdm import tqdm
 import numpy as np
 import gc
+import pandas as pd
 
+RESULTS_DIR = Path("/eodc/private/tuwgeo/users/mabdelaa/repos/gdacs_gfm/results")
+results_df_path = RESULTS_DIR / "processing_results.csv"
+results_df = pd.read_csv(results_df_path)
 
 def count_flooded_pixels(dc, timestamp, LOGGER):
     """
@@ -41,12 +45,11 @@ def count_flooded_pixels(dc, timestamp, LOGGER):
         del mosaic
         gc.collect()
 
+
 def log_event_no_data(event, LOGGER, reason: str):
     LOGGER.info("==============================================")
     LOGGER.warning(f"{event.country} ({event.gdacs_id}): {reason}")
     LOGGER.info("==============================================")
-
-
 
 
 def process_event(
@@ -58,6 +61,7 @@ def process_event(
 ):
     """
     Process a single flood event and persist flood statistics to CSV.
+    If no rows are written, append '_MISSED' to the filename.
     """
 
     event_id = event.GDACS_ID
@@ -65,18 +69,24 @@ def process_event(
 
     LOGGER.info(f"Event {event_id}: Processing started")
 
-
     if not dcs:
-        log_event_no_data(event, LOGGER, "No GFM data available")
+        LOGGER.warning(f"Event {event_id}: No GFM data available")
         return
 
     if not isinstance(dcs, list):
         dcs = [dcs]
 
+    for i, dc_filtered in enumerate(dcs, start=1):
+        LOGGER.info(
+            f"Event ({event_id}): Filtered datacube AOI {i} has "
+            f"{len(set(dc_filtered['time'].values))} images"
+        )
+
     results_dir.mkdir(parents=True, exist_ok=True)
     csv_path = results_dir / f"{event_id}_{algorithm.value}.csv"
-
     write_header = not csv_path.exists()
+
+    rows_written = 0  # Track if any data rows are written
 
     with csv_path.open("a", newline="") as f:
         writer = csv.writer(f)
@@ -89,13 +99,11 @@ def process_event(
         for i, dc in enumerate(dcs, start=1):
             timestamps = sorted(set(dc["time"].values))
             LOGGER.info(
-                f"Event {event_id}: AOI {i}/{len(dcs)} "
-                f"({len(timestamps)} images)"
+                f"Event {event_id}: AOI {i}/{len(dcs)} ({len(timestamps)} images)"
             )
 
             for ts in tqdm(timestamps, desc=f"{event_id} AOI {i}", unit="image"):
                 stats = count_flooded_pixels(dc, ts, LOGGER)
-
                 if not stats:
                     continue
 
@@ -109,5 +117,28 @@ def process_event(
                         stats["tile_name"].flatten().tolist(),
                     ]
                 )
+                rows_written += 1
+
+    # Rename file if no data rows were written
+    if rows_written == 0:
+        missed_path = csv_path.with_name(csv_path.stem + "_MISSED.csv")
+        csv_path.rename(missed_path)
+        LOGGER.warning(
+            f"{country} ({event_id}): No flooded pixels detected. "
+        )
+        LOGGER.info("===============================================")
+        LOGGER.info("===============================================")
+       
+        results_df.loc[results_df["GDACS_ID"] == event_id, "processed"] = True
+        results_df.loc[results_df["GDACS_ID"] == event_id, "status"] ="missed"
+        results_df.to_csv(results_df_path, index=False)
+
+    else:
+        LOGGER.info(f"{country} ({event_id}): Flood detected processing completed with {rows_written} records.")
+        LOGGER.info("===============================================")
+        LOGGER.info("===============================================")
+        results_df.loc[results_df["GDACS_ID"] == event_id, "processed"] = True
+        results_df.loc[results_df["GDACS_ID"] == event_id, "status"] ="detected"
+        results_df.to_csv(results_df_path, index=False)
 
     LOGGER.info(f"Event {event_id}: Processing completed")
