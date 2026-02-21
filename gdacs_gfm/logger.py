@@ -7,9 +7,9 @@ import logging.config
 
 from pathlib import Path
 import concurrent_log_handler
-
-import logging
 import json
+import os
+import socket
 import datetime as dt
 
 LOG_RECORD_BUILTIN_ATTRS = set(
@@ -77,25 +77,62 @@ class NonErrorFilter(logging.Filter):
         return record.levelno <= logging.INFO
 
 
-def setup_logging():
+# def setup_logging():
 
+#     # Determine paths
+#     ROOT_DIR = Path(__file__).resolve().parents[1]
+#     config_file = ROOT_DIR / "logging_config.json"
+
+#     # Ensure log directory exists
+#     log_file = ROOT_DIR / "logs"
+#     log_file.parent.mkdir(parents=True, exist_ok=True)
+
+#     if config_file.exists():
+#         with open(config_file, "rt", encoding="utf8") as f:
+#             config_dict = json.load(f)
+
+#         # allow log level override via environment variable
+#         env_log_level = os.getenv("LOG_LEVEL")
+#         if env_log_level:
+#             config_dict["loggers"]["root"]["level"] = env_log_level.upper()
+#         logging.config.dictConfig(config_dict)
+#     else:
+#         logging.basicConfig(
+#             level=os.getenv("LOG_LEVEL", "INFO").upper(),
+#             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+#         )
+
+
+
+def setup_logging():
     # Determine paths
     ROOT_DIR = Path(__file__).resolve().parents[1]
     config_file = ROOT_DIR / "logging_config.json"
 
     # Ensure log directory exists
-    log_file = ROOT_DIR / "logs"
-    log_file.parent.mkdir(parents=True, exist_ok=True)
+    logs_dir = ROOT_DIR / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    hostname = socket.gethostname()
 
     if config_file.exists():
         with open(config_file, "rt", encoding="utf8") as f:
             config_dict = json.load(f)
 
+        # ---- Inject hostname into log filenames ----
+        for handler_name, handler in config_dict.get("handlers", {}).items():
+            if "filename" in handler:
+                original = Path(handler["filename"])
+                new_name = f"{original.stem}_{hostname}{original.suffix}"
+                handler["filename"] = str(logs_dir / new_name)
+
         # allow log level override via environment variable
         env_log_level = os.getenv("LOG_LEVEL")
         if env_log_level:
             config_dict["loggers"]["root"]["level"] = env_log_level.upper()
+
         logging.config.dictConfig(config_dict)
+
     else:
         logging.basicConfig(
             level=os.getenv("LOG_LEVEL", "INFO").upper(),

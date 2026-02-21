@@ -52,6 +52,7 @@ def load_event_geojson(
 
     polygons: List[Polygon] = []
     logger.info(f"Number of features in GeoJSON: {len(features)}")
+
     for feature in features:
         geom = feature.get("geometry")
         geom_type = geom.get("type") if geom else None
@@ -77,10 +78,24 @@ def load_event_geojson(
         logger.warning(f"Event ({event_id}): No valid polygon found in GeoJSON")
         return None, None
 
+    # Keep only the 5 largest polygons if more than 5 exist
+    if len(polygons) > 5:
+        polygons_with_area = [
+            (poly, compute_polygons_area_km2(poly)) for poly in polygons
+        ]
+        polygons_with_area.sort(key=lambda x: x[1], reverse=True)
+        polygons = [poly for poly, _ in polygons_with_area[:5]]
+
+        logger.info(
+            f"Event ({event_id}): Reduced polygons to 5 largest by area (km²)"
+        )
+
     # GDACS AOIs are WGS84
     sref = SpatialRef(4326)
 
     return polygons, sref
+
+
 
 
 # --- DATA CUBE FILTERING --->
@@ -145,10 +160,12 @@ def filterby_dc_poly(dc, poly, sref, event_id, LOGGER=None):
 if __name__ == "__main__":
     from pprint import pprint
 
-    event_id = "FL-4215"
+    event_id = "FL-1100679"
     geojson_dir = "/eodc/private/tuwgeo/users/mabdelaa/repos/GDACS_Flood_DB/data/aois"
 
-    geometry = load_event_geojson(event_id, geojson_dir)
+    p,s = load_event_geojson(event_id, geojson_dir)
 
-    pprint(geometry)
-    print(compute_polygons_area_km2(geometry))
+    print(len(p))
+    print(p)
+    for pp in p:
+        print(compute_polygons_area_km2(pp))

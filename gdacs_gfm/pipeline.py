@@ -2,54 +2,71 @@ import csv
 from pathlib import Path
 from tqdm import tqdm
 import numpy as np
-import gc
 import pandas as pd
 
-RESULTS_DIR = Path("/eodc/private/tuwgeo/users/mabdelaa/repos/gdacs_gfm/results")
-results_df_path = RESULTS_DIR / "processing_results.csv"
-results_df = pd.read_csv(results_df_path)
+from concurrent.futures import ThreadPoolExecutor
+import numpy as np
+import pandas as pd
+import rasterio
+from pathlib import Path
 
-def count_flooded_pixels(dc, timestamp, LOGGER):
-    """
-    Count flooded pixels for a single timestamp in a DataCube.
-    Returns None if no flooded pixels are found.
-    """
 
+def _process_file(fp):
     try:
-        mosaic = dc.select_by_dimension(lambda x: x == timestamp, "time")
-        mosaic.read()
-
-        data_arr = mosaic.data_view.rename_vars({1: "flood_extent"})
-        data_arr["flood_extent"] = data_arr["flood_extent"].where(
-            ~np.isin(data_arr["flood_extent"], [0, 255]), 0
-        )
-
-        flooded_pixels = int(np.sum(data_arr["flood_extent"]))
-
-        if flooded_pixels == 0:
-            return None
-
-        extent_km2 = (flooded_pixels * 20 * 20) / 1e6
-
-        return {
-            "timestamp": timestamp,
-            "extent_km2": extent_km2,
-            "tile_name": mosaic["tile_name"].values,
-        }
-
-    except Exception as e:
-        LOGGER.warning(f"DataCube error at {timestamp}: {e}")
-        return None
-
-    finally:
-        del mosaic
-        gc.collect()
+        with rasterio.open(fp) as src:
+            data = src.read(1)
+            flooded_pixels = int(np.count_nonzero(data == 1))
+            area_km2 = flooded_pixels * 400 / 1e6
+            return flooded_pixels, area_km2
+    except:
+        return None, None
 
 
-def log_event_no_data(event, LOGGER, reason: str):
-    LOGGER.info("==============================================")
-    LOGGER.warning(f"{event.country} ({event.gdacs_id}): {reason}")
-    LOGGER.info("==============================================")
+def add_flood_metrics_parallel(df, max_workers=8):
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
+        results = list(exe.map(_process_file, df["filepath"]))
+
+    df = df.copy()
+    df["pixel_count"] = [r[0] for r in results]
+    df["area_km2"] = [r[1] for r in results]
+
+    return df
+
+
+def add_flood_metrics(df, LOGGER=None):
+    """
+    Adds pixel_count and area_km2 columns to the DataFrame
+    by reading each GeoTIFF in the 'filepath' column.
+    Assumes 20 m resolution (400 m² per pixel).
+    """
+
+    pixel_counts = []
+    areas = []
+
+    for fp in tqdm(df["filepath"]):
+        try:
+            with rasterio.open(fp) as src:
+                data = src.read(1)
+
+                flooded_pixels = int(np.count_nonzero(data == 1))
+
+                # Fixed 20m pixel size
+                area_km2 = flooded_pixels * 400 / 1e6
+
+                pixel_counts.append(flooded_pixels)
+                areas.append(area_km2)
+
+        except Exception as e:
+            if LOGGER:
+                LOGGER.warning(f"GeoTIFF error for {fp}: {e}")
+            pixel_counts.append(None)
+            areas.append(None)
+
+    df = df.copy()
+    df["pixel_count"] = pixel_counts
+    df["area_km2"] = areas
+
+    return df
 
 
 def process_event(
@@ -58,14 +75,16 @@ def process_event(
     dcs,
     results_dir: Path,
     LOGGER,
+    parallel=False,
+    max_workers=8,
 ):
     """
-    Process a single flood event and persist flood statistics to CSV.
-    If no rows are written, append '_MISSED' to the filename.
+    Process a single flood event using file-based metrics.
+    Computes flood area per file and saves results to CSV.
     """
 
-    event_id = event.GDACS_ID
-    country = event.country
+    event_id = event["GDACS_ID"]
+    country = event["country"]
 
     LOGGER.info(f"Event {event_id}: Processing started")
 
@@ -76,69 +95,57 @@ def process_event(
     if not isinstance(dcs, list):
         dcs = [dcs]
 
-    for i, dc_filtered in enumerate(dcs, start=1):
+    # Collect file registers from all AOIs
+    dfs = []
+    for i, dc in enumerate(dcs, start=1):
+        df = dc.file_register.copy()
+        df["aoi"] = f"AOI_{i}"
+        dfs.append(df)
+
         LOGGER.info(
-            f"Event ({event_id}): Filtered datacube AOI {i} has "
-            f"{len(set(dc_filtered['time'].values))} images"
+            f"Event {event_id}: AOI {i} has {len(df)} images"
         )
 
+    # Merge all AOIs into one dataframe
+    event_df = pd.concat(dfs, ignore_index=True)
+     
+    # Compute flood metrics
+    LOGGER.info(f"Event {event_id}: Starting flood metrics computation")
+
+    if parallel:
+        LOGGER.info(
+            f"Event {event_id}: Running flood metrics in parallel "
+            f"(max_workers={max_workers})"
+        )
+        event_df = add_flood_metrics_parallel(event_df, max_workers=max_workers)
+    else:
+        LOGGER.info(f"Event {event_id}: Running flood metrics in single-threaded mode")
+        event_df = add_flood_metrics(event_df, LOGGER)
+    
+
+    # Add event metadata
+    event_df["event_id"] = event_id
+    event_df["country"] = country
+
+    # Save CSV
     results_dir.mkdir(parents=True, exist_ok=True)
     csv_path = results_dir / f"{event_id}_{algorithm.value}.csv"
-    write_header = not csv_path.exists()
+    event_df.to_csv(csv_path, index=False)
 
-    rows_written = 0  # Track if any data rows are written
+    # Update processing results table
+    results_df_path = results_dir / "processing_results.csv"
+    results_df = pd.read_csv(results_df_path)
 
-    with csv_path.open("a", newline="") as f:
-        writer = csv.writer(f)
-
-        if write_header:
-            writer.writerow(
-                ["event_id", "country", "aoi", "timestamp", "extent_km2", "tile_name"]
-            )
-
-        for i, dc in enumerate(dcs, start=1):
-            timestamps = sorted(set(dc["time"].values))
-            LOGGER.info(
-                f"Event {event_id}: AOI {i}/{len(dcs)} ({len(timestamps)} images)"
-            )
-
-            for ts in tqdm(timestamps, desc=f"{event_id} AOI {i}", unit="image"):
-                stats = count_flooded_pixels(dc, ts, LOGGER)
-                if not stats:
-                    continue
-
-                writer.writerow(
-                    [
-                        event_id,
-                        country,
-                        f"AOI_{i}",
-                        stats["timestamp"],
-                        stats["extent_km2"],
-                        stats["tile_name"].flatten().tolist(),
-                    ]
-                )
-                rows_written += 1
-
-    # Rename file if no data rows were written
-    if rows_written == 0:
-        missed_path = csv_path.with_name(csv_path.stem + "_MISSED.csv")
-        csv_path.rename(missed_path)
-        LOGGER.warning(
-            f"{country} ({event_id}): No flooded pixels detected. "
-        )
-        LOGGER.info("===============================================")
-        LOGGER.info("===============================================")
-       
-        results_df.loc[results_df["GDACS_ID"] == event_id, "processed"] = True
-        results_df.loc[results_df["GDACS_ID"] == event_id, "status"] ="missed"
-        results_df.to_csv(results_df_path, index=False)
-
+    if event_df["pixel_count"].sum() == 0:
+        status = "missed"
+        LOGGER.warning(f"{country} ({event_id}): No flooded pixels detected.")
     else:
-        LOGGER.info(f"{country} ({event_id}): Flood detected processing completed with {rows_written} records.")
-        LOGGER.info("===============================================")
-        LOGGER.info("===============================================")
-        results_df.loc[results_df["GDACS_ID"] == event_id, "processed"] = True
-        results_df.loc[results_df["GDACS_ID"] == event_id, "status"] ="detected"
-        results_df.to_csv(results_df_path, index=False)
+        status = "detected"
+        LOGGER.info(f"{country} ({event_id}): Flood detected.")
+
+    results_df.loc[results_df["GDACS_ID"] == event_id, "processed"] = True
+    results_df.loc[results_df["GDACS_ID"] == event_id, algorithm.value] = status
+    results_df.to_csv(results_df_path, index=False)
 
     LOGGER.info(f"Event {event_id}: Processing completed")
+
