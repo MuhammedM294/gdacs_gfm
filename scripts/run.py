@@ -190,29 +190,29 @@ def main():
     logger.info(f"Total number of flood events in DB: {len(df)}")
 
     df_results = pd.read_csv(RESULTS_FILE)
-
-    selected_algorithm = GFMAlgorithm.LIST
-    logger.info(f"Selected GFM Algorithm: {selected_algorithm.value}")
-
-    # Ensure column exists
-    if selected_algorithm.value not in df_results.columns:
-        df_results[selected_algorithm.value] = ""
     
-    for _, row in tqdm(
-        df.iterrows(),
-        total=len(df),
-        desc="Processing Flood Events",
-        unit="event"
-    ):  
-        try:
-            
-            process_single_event(row, selected_algorithm, df_results)
-        except Exception as e:
-            logger.warning(f"{e}")
+    for selected_algorithm in [GFMAlgorithm.ENSEMBLE, GFMAlgorithm.LIST, GFMAlgorithm.DLR ,GFMAlgorithm.TUW ]:
+        logger.info(f"Selected GFM Algorithm: {selected_algorithm.value}")
 
-    # Save once at the end
-    df_results.to_csv(RESULTS_FILE, index=False)
-    logger.info("Processing completed for all events.")
+        # Ensure column exists
+        if selected_algorithm.value not in df_results.columns:
+            df_results[selected_algorithm.value] = ""
+        # df = df.iloc[899:]
+        for _, row in tqdm(
+            df.iterrows(),
+            total=len(df),
+            desc="Processing Flood Events",
+            unit="event"
+        ):  
+            try:
+                
+                process_single_event(row, selected_algorithm, df_results)
+            except Exception as e:
+                logger.warning(f"{e}")
+
+        # Save once at the end
+        df_results.to_csv(RESULTS_FILE, index=False)
+        logger.info("Processing completed for all events.")
 
 
 if __name__ == "__main__":
