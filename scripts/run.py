@@ -11,7 +11,16 @@ from gdacs_gfm.datacube import build_datacube, filter_datacube_by_event
 from gdacs_gfm.pipeline import process_event
 from gdacs_gfm.logger import setup_logging
 from gdacs_gfm.process_geojson import load_event_geojson
+from gdacs_gfm.retrieve_gfm_product import build_exclusion_dcs
 
+
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    message="invalid value encountered in area",
+    category=RuntimeWarning,
+)
 
 # -----------------------
 # Setup
@@ -22,12 +31,8 @@ logger = logging.getLogger("gfm_logger")
 DB_PATH = Path(
     "/eodc/private/tuwgeo/users/mabdelaa/repos/GDACS_Flood_DB/data/latest_gdacs_flood_db.csv"
 )
-GEOJSON_DIR = Path(
-    "/eodc/private/tuwgeo/users/mabdelaa/repos/GDACS_Flood_DB/data/aois"
-)
-RESULTS_DIR = Path(
-    "/eodc/private/tuwgeo/users/mabdelaa/repos/gdacs_gfm/results"
-)
+GEOJSON_DIR = Path("/eodc/private/tuwgeo/users/mabdelaa/repos/GDACS_Flood_DB/data/aois")
+RESULTS_DIR = Path("/eodc/private/tuwgeo/users/mabdelaa/repos/gdacs_gfm/results")
 RESULTS_FILE = RESULTS_DIR / "processing_results.csv"
 
 
@@ -57,9 +62,7 @@ def update_event_status(
 ) -> None:
     """Update processing status for an event."""
     df_results.loc[df_results["GDACS_ID"] == event_id, "processed"] = True
-    df_results.loc[
-        df_results["GDACS_ID"] == event_id, algorithm.value
-    ] = status
+    df_results.loc[df_results["GDACS_ID"] == event_id, algorithm.value] = status
 
 
 def event_already_processed(event_id, selected_algorithm, results_dir: Path) -> bool:
@@ -88,6 +91,7 @@ def event_already_processed(event_id, selected_algorithm, results_dir: Path) -> 
 
     return False
 
+
 # -----------------------
 # Core processing
 # -----------------------
@@ -110,7 +114,6 @@ def process_single_event(
     if event_already_processed(event_id, selected_algorithm, RESULTS_DIR):
         logger.info(f"Skipping! Event {event_id} already processed. ")
         return
-    
 
     # -----------------------
     # Load AOI
@@ -162,7 +165,20 @@ def process_single_event(
         )
         update_event_status(df_results, event_id, selected_algorithm, "no_data")
         return
+    if selected_algorithm != GFMAlgorithm.ENSEMBLE:
+        exclusion_dc = build_exclusion_dcs(
+            star_date=event_start,
+            end_date=event_end,
+            equi7_code=equi7grid,
+            algorithm=selected_algorithm,
+        )
+        exclusion_dc_sel = filter_datacube_by_event(
+            exclusion_dc, event_id, polygons, sref, logger
+        )
+        # exclusion_dc_sel = None
 
+    else:
+        exclusion_dc_sel = None
     # -----------------------
     # Run processing
     # -----------------------
@@ -171,6 +187,7 @@ def process_single_event(
             event=row,
             algorithm=selected_algorithm,
             dcs=dc_sel,
+            ex_dcs=exclusion_dc_sel,
             results_dir=RESULTS_DIR,
             LOGGER=logger,
         )
@@ -187,25 +204,39 @@ def process_single_event(
 # -----------------------
 def main():
     df = pd.read_csv(DB_PATH)
+
     logger.info(f"Total number of flood events in DB: {len(df)}")
 
     df_results = pd.read_csv(RESULTS_FILE)
-    
-    for selected_algorithm in [GFMAlgorithm.ENSEMBLE, GFMAlgorithm.LIST, GFMAlgorithm.DLR ,GFMAlgorithm.TUW ]:
+    # id_list = ["FL-1100451"]
+    # df = df[df['GDACS_ID'].isin(id_list)]
+    print(f"Number of events after filtering: {len(df)}")
+    skip_events = [
+        "FL-1000144",
+        "FL-1000153",
+        "FL-1000145",
+        "FL-1000148",
+        "FL-1000213",
+        "FL-1100163",
+        "FL-1100104",
+        "FL-1100112",
+        "FL-1100204",
+        "FL-1100182",
+        "FL-1100246",
+    ]
+    df = df[~df["GDACS_ID"].isin(skip_events)]
+    print(f"Number of events after filtering for alertscore=1: {len(df)}")
+    # df = df.iloc[2000:]
+    for selected_algorithm in [GFMAlgorithm.ENSEMBLE]:
         logger.info(f"Selected GFM Algorithm: {selected_algorithm.value}")
 
         # Ensure column exists
         if selected_algorithm.value not in df_results.columns:
             df_results[selected_algorithm.value] = ""
-        # df = df.iloc[899:]
         for _, row in tqdm(
-            df.iterrows(),
-            total=len(df),
-            desc="Processing Flood Events",
-            unit="event"
-        ):  
+            df.iterrows(), total=len(df), desc="Processing Flood Events", unit="event"
+        ):
             try:
-                
                 process_single_event(row, selected_algorithm, df_results)
             except Exception as e:
                 logger.warning(f"{e}")

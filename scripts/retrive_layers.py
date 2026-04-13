@@ -102,7 +102,7 @@ def process_single_event(row_dict = None ):
             event_end=event_end,
             equi7_code=equi7grid,
             algorithm=ALGO,
-            buffer_days=5,
+            buffer_days=1,
         )
 
         fl, uncer, exc, obsw, adv = images
@@ -138,7 +138,7 @@ def process_single_event(row_dict = None ):
 
 if __name__ == "__main__":
     df = pd.read_csv(DB_PATH)
-    df = df[df['GDACS_ID']=="FL-1000066"]
+    df = df[df['GDACS_ID']=="FL-1100451"]
     rows = df.to_dict(orient="records")
     # rows = rows[3500:]
     for row_dict in tqdm(rows, desc="Processing events"):

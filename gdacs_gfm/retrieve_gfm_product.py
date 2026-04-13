@@ -164,6 +164,27 @@ def copy_files(file_paths, destination_dir , logger=None):
 
 
 
+def build_exclusion_dcs(star_date, end_date, equi7_code, algorithm):
+    files = find_gfm_layers_images(
+        event_start=star_date,
+        event_end=end_date,
+        equi7_code=equi7_code,
+        algorithm=algorithm,
+        buffer_days=1,
+    )
+
+    ex_files = files[2]  # Exclusion layer is the 3rd element in the returned tuple
+    ex_files_str = [str(f) for f in ex_files]
+    field_defs = select_field_defs(algorithm, ex_files[0].parents[6].name)[2]  # Get EX_FIELDS_DEF
+
+    ex_dc = build_datacube(
+        ex_files_str,
+        DIMENSIONS,
+        field_defs,
+    )
+
+    return ex_dc
+
 
 if __name__ == "__main__":
 
@@ -198,6 +219,8 @@ if __name__ == "__main__":
         DIMENSIONS,
         FL_FIELDS_DEF,
     )
+    
+    print(fl_dc.file_register)
    
 
     
